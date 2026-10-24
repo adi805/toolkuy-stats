@@ -292,8 +292,15 @@ def main():
     # tidak jadi 30 request kalau feed penuh 15 video.
     for it in items[:8]:
         it["likes"], it["comments"] = parse_engagement(it["id"])
-    total_likes = sum(i.get("likes") or 0 for i in items[:8])
-    total_comments = sum(i.get("comments") or 0 for i in items[:8])
+    # Total hanya dihitung kalau SEMUA video teratas terbaca. Kalau ada yang
+    # tidak terbaca, tampilkan em dash: None tidak boleh menyamar jadi 0.
+    seen = items[:8]
+    total_likes = (sum(i["likes"] for i in seen)
+                   if seen and all(i.get("likes") is not None for i in seen) else None)
+    total_comments = (sum(i["comments"] for i in seen)
+                      if seen and all(i.get("comments") is not None for i in seen) else None)
+    log("engagement: " + ", ".join(
+        f"{i['id']}:likes={i.get('likes')},comments={i.get('comments')}" for i in seen))
 
     prev = None
     if os.path.exists(LAST):
@@ -315,7 +322,9 @@ def main():
                  f"({fmt_delta(total_views, prev_views)})")
     if vid_count is not None:
         lines.append(f"🎬 Jumlah video: **{vid_count}**")
-    lines.append(f"👍 Like: **{total_likes}** · 💬 Komentar: **{total_comments}**")
+    lk_tot = "—" if total_likes is None else total_likes
+    cm_tot = "—" if total_comments is None else total_comments
+    lines.append(f"👍 Like: **{lk_tot}** · 💬 Komentar: **{cm_tot}**")
 
     if items:
         lines.append("")
