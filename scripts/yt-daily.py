@@ -154,9 +154,28 @@ def parse_engagement(video_id):
         log(f"engagement {video_id}: watch page gagal ({type(exc).__name__}), dilewati")
         return None, None
 
-    m = re.search(r'"likeCount":"(\d+)"', html)
-    if m:
-        likes = int(m.group(1))
+    # Like: format-nya beda-beda tergantung varian halaman yang dilayani.
+    # Runner CI terbukti dapat varian tanpa "likeCount":"n", jadi coba beberapa.
+    for pat in (
+        r'"likeCount":"(\d+)"',                      # varian klasik (string)
+        r'"likeCount":(\d+)',                        # varian angka mentah
+        r'"expandedLikeCountIfIndifferent":\{"content":"([\d.,]+[KMB]?)"',
+        r'"like this video along with ([\d,]+) other people',
+        r'"([\d.,]+[KMB]?) likes?"',
+    ):
+        m = re.search(pat, html)
+        if m:
+            val = parse_count(m.group(1))
+            if val is not None:
+                likes = val
+                log(f"engagement {video_id}: like dari pola {pat[:40]}")
+                break
+    if likes is None:
+        # Diagnosa: tanpa ini, "tak terbaca" cuma tebakan.
+        log(f"engagement {video_id}: like tak terbaca, html_len={len(html)} "
+            f"likeCount_hits={len(re.findall('likeCount', html))} "
+            f"like_word={bool(re.search('like', html, re.I))} "
+            f"ctx={re.findall(r'.{0,40}likeCount.{0,40}', html)[:2]}")
 
     key = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', html)
     cont = re.search(r'"continuationCommand":\{"token":"([^"]+)"', html)
