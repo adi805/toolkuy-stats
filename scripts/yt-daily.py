@@ -154,28 +154,25 @@ def parse_engagement(video_id):
         log(f"engagement {video_id}: watch page gagal ({type(exc).__name__}), dilewati")
         return None, None
 
-    # Like: format-nya beda-beda tergantung varian halaman yang dilayani.
-    # Runner CI terbukti dapat varian tanpa "likeCount":"n", jadi coba beberapa.
-    for pat in (
-        r'"likeCount":"(\d+)"',                      # varian klasik (string)
-        r'"likeCount":(\d+)',                        # varian angka mentah
-        r'"expandedLikeCountIfIndifferent":\{"content":"([\d.,]+[KMB]?)"',
-        r'"like this video along with ([\d,]+) other people',
-        r'"([\d.,]+[KMB]?) likes?"',
-    ):
-        m = re.search(pat, html)
+    # Like: angka aslinya tidak selalu ada di HTML. Hasil uji tiga IP:
+    #   - IP residensial : "likeCount":"1"  (akurat)
+    #   - IP datacenter  : tidak ada likeCount, tapi teks aksesibilitas tombol
+    #                      like menyebut "along with 1 other person" (akurat)
+    #   - "expandedLikeCountIfIndifferent" SELALU "0" di datacenter, jadi
+    #     JANGAN dipakai: itu angka palsu yang kelihatan sah.
+    m = re.search(r'"likeCount":"(\d+)"', html)
+    if m:
+        likes = int(m.group(1))
+    else:
+        m = re.search(r"like this video along with ([\d,]+) other", html)
         if m:
-            val = parse_count(m.group(1))
-            if val is not None:
-                likes = val
-                log(f"engagement {video_id}: like dari pola {pat[:40]}")
-                break
+            likes = parse_count(m.group(1))
+        elif '"like this video"' in html:
+            likes = 0  # tombol like ada, tanpa "along with" = belum ada yang like
     if likes is None:
-        # Diagnosa: tanpa ini, "tak terbaca" cuma tebakan.
         log(f"engagement {video_id}: like tak terbaca, html_len={len(html)} "
             f"likeCount_hits={len(re.findall('likeCount', html))} "
-            f"like_word={bool(re.search('like', html, re.I))} "
-            f"ctx={re.findall(r'.{0,40}likeCount.{0,40}', html)[:2]}")
+            f"along_hits={len(re.findall('along with', html))}")
 
     key = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', html)
     cont = re.search(r'"continuationCommand":\{"token":"([^"]+)"', html)
