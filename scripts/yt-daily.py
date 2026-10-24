@@ -5,6 +5,8 @@ Zero-LLM: dijalankan oleh system crontab, bukan oleh agent.
 Sumber data publik (tanpa API key):
   - RSS feed kanal  : views per video
   - halaman kanal   : subscriber + jumlah video
+  - halaman watch   : like per video
+  - endpoint innertube (publik): jumlah komentar per video
 Token Discord dibaca dari ~/.opencrabs/keys.toml saat runtime, tidak pernah di-print.
 
 Exit code selalu 0 kalau sudah berhasil mengirim pesan (termasuk PARTIAL),
@@ -118,6 +120,88 @@ def parse_channel(html):
         vids = parse_count(m.group(1))
     return subs, vids
 
+def post_json(url, payload, tries=2):
+    """POST JSON (endpoint innertube YouTube). Raise kalau semua percobaan gagal."""
+    last_err = None
+    body = json.dumps(payload).encode("utf-8")
+    for attempt in range(1, tries + 1):
+        try:
+            req = urllib.request.Request(url, data=body, headers={
+                "User-Agent": UA,
+                "Content-Type": "application/json",
+                "Accept-Language": "en-US,en;q=0.9",
+            })
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                return resp.read().decode("utf-8", "replace")
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            log(f"post attempt {attempt}/{tries} gagal: {type(exc).__name__}: {exc}")
+            if attempt < tries:
+                time.sleep(3 * attempt)
+    raise RuntimeError(f"post gagal setelah {tries} percobaan: {last_err}")
+
+def parse_engagement(video_id):
+    """Like + jumlah komentar satu video. Balik (likes, comments), None kalau tak terbaca.
+
+    Like ada di HTML halaman watch (ytInitialData). Jumlah komentar TIDAK ada di
+    HTML itu, harus lewat /youtubei/v1/next pakai continuation token dari HTML yang sama.
+    Endpoint ini publik (pakai INNERTUBE_API_KEY yang ikut di halaman), tidak butuh API key.
+    """
+    likes = None
+    try:
+        html = fetch(f"https://www.youtube.com/watch?v={video_id}")
+    except Exception as exc:  # noqa: BLE001
+        log(f"engagement {video_id}: watch page gagal ({type(exc).__name__}), dilewati")
+        return None, None
+
+    m = re.search(r'"likeCount":"(\d+)"', html)
+    if m:
+        likes = int(m.group(1))
+
+    key = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', html)
+    cont = re.search(r'"continuationCommand":\{"token":"([^"]+)"', html)
+    if not (key and cont):
+        log(f"engagement {video_id}: token innertube tidak ketemu, komentar dilewati")
+        return likes, None
+    try:
+        raw = post_json(
+            f"https://www.youtube.com/youtubei/v1/next?key={key.group(1)}",
+            {"context": {"client": {"clientName": "WEB",
+                                    "clientVersion": "2.20241010.00.00"}},
+             "continuation": cont.group(1)},
+        )
+        payload = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        log(f"engagement {video_id}: komentar gagal ({type(exc).__name__}), dilewati")
+        return likes, None
+
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "commentsHeaderRenderer" in node:
+                found.append(node["commentsHeaderRenderer"].get("countText"))
+            for val in node.values():
+                walk(val)
+        elif isinstance(node, list):
+            for val in node:
+                walk(val)
+
+    walk(payload)
+    for ct in found:
+        if not isinstance(ct, dict):
+            continue
+        if "runs" in ct:
+            txt = "".join(r.get("text", "") for r in ct["runs"])
+        elif "simpleText" in ct:
+            txt = ct["simpleText"]
+        else:
+            continue
+        num = parse_count(txt)
+        if num is not None:
+            return likes, num
+    return likes, None
+
 
 def fmt_delta(cur, prev, unit=""):
     if prev is None:
@@ -204,6 +288,13 @@ def main():
             f"video_ctx={re.findall(r'\"content\":\"([^\"]{0,24}video[^\"]{0,12})\"', html, re.I)[:3]}")
     total_views = sum(i["views"] for i in items)
 
+    # Like + komentar per video. Dibatasi 8 teratas (yang ditampilkan) supaya
+    # tidak jadi 30 request kalau feed penuh 15 video.
+    for it in items[:8]:
+        it["likes"], it["comments"] = parse_engagement(it["id"])
+    total_likes = sum(i.get("likes") or 0 for i in items[:8])
+    total_comments = sum(i.get("comments") or 0 for i in items[:8])
+
     prev = None
     if os.path.exists(LAST):
         try:
@@ -224,6 +315,7 @@ def main():
                  f"({fmt_delta(total_views, prev_views)})")
     if vid_count is not None:
         lines.append(f"🎬 Jumlah video: **{vid_count}**")
+    lines.append(f"👍 Like: **{total_likes}** · 💬 Komentar: **{total_comments}**")
 
     if items:
         lines.append("")
@@ -232,7 +324,9 @@ def main():
             before = prev_items.get(it["id"], {}).get("views")
             delta = fmt_delta(it["views"], before)
             title = it["title"] if len(it["title"]) <= 70 else it["title"][:67] + "..."
-            lines.append(f"• `{it['views']}` views ({delta}) — {title}")
+            lk = "—" if it.get("likes") is None else it["likes"]
+            cm = "—" if it.get("comments") is None else it["comments"]
+            lines.append(f"• `{it['views']}` views ({delta}) · 👍 {lk} · 💬 {cm} — {title}")
     else:
         lines.append("")
         lines.append("Belum ada video di feed.")
@@ -247,6 +341,7 @@ def main():
         "videos": vid_count,
         "total_views": total_views,
         "items": {i["id"]: {"title": i["title"], "views": i["views"],
+                            "likes": i.get("likes"), "comments": i.get("comments"),
                             "published": i["published"]} for i in items},
     }
     with open(os.path.join(STATS_DIR, f"{stamp:%Y-%m-%d}.json"), "w", encoding="utf-8") as fh:
@@ -257,7 +352,8 @@ def main():
         with open(os.path.join(STATS_DIR, "stats.csv"), "a", encoding="utf-8") as fh:
             fh.write(f"{stamp:%Y-%m-%d %H:%M},{subs},{vid_count},{total_views}\n")
 
-    log(f"subs={subs} videos={vid_count} total_views={total_views} items={len(items)}")
+    log(f"subs={subs} videos={vid_count} total_views={total_views} "
+        f"likes={total_likes} comments={total_comments} items={len(items)}")
     post_discord(content)
     return 0
 
