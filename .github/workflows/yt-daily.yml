@@ -1,0 +1,46 @@
+name: YouTube daily stats
+
+# 00:00 UTC = 07:00 WIB. GitHub cron SELALU UTC, jangan pakai jam lokal.
+# Jadwal GHA bisa telat 5-30 menit saat antrean ramai, itu normal.
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: yt-daily
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Send report to Discord
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: "1555442032355577877"
+          YT_STATS_DIR: stats
+          YT_LOG_DIR: /tmp/yt-logs
+        run: python3 scripts/yt-daily.py
+
+      # Snapshot di-commit supaya delta (+n) tetap punya pembanding besok.
+      # Runner ephemeral: tanpa ini tiap hari mulai dari nol.
+      # Commit harian juga menjaga repo tetap aktif, jadi jadwal tidak
+      # dimatikan otomatis oleh GitHub setelah 60 hari tanpa aktivitas.
+      - name: Commit snapshot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add stats
+          if git diff --staged --quiet; then
+            echo "tidak ada perubahan snapshot"
+          else
+            git commit -m "chore(stats): snapshot $(date -u +%Y-%m-%d) [skip ci]"
+            git push
+          fi
