@@ -164,7 +164,6 @@ def main():
 
     try:
         rss = fetch(f"https://www.youtube.com/feeds/videos.xml?channel_id={CHANNEL_ID}")
-        html = fetch(f"https://www.youtube.com/@{HANDLE}")
     except Exception as exc:  # noqa: BLE001
         log(f"PARTIAL: {exc}")
         post_discord(
@@ -174,7 +173,28 @@ def main():
         return 0
 
     items = parse_rss(rss)
-    subs, vid_count = parse_channel(html)
+
+    # Halaman kanal: sebagian IP (runner CI) dilayani varian ringan tanpa
+    # metadata subscriber. Coba beberapa bentuk URL, pakai yang berisi angka.
+    html = ""
+    subs = vid_count = None
+    for variant in (
+        f"https://www.youtube.com/@{HANDLE}?hl=en&gl=US",
+        f"https://www.youtube.com/@{HANDLE}",
+        f"https://www.youtube.com/@{HANDLE}/about?hl=en&gl=US",
+    ):
+        try:
+            cand = fetch(variant)
+        except Exception as exc:  # noqa: BLE001
+            log(f"varian gagal: {variant}: {type(exc).__name__}")
+            continue
+        if not html:
+            html = cand
+        got_subs, got_vids = parse_channel(cand)
+        if got_subs is not None:
+            html, subs, vid_count = cand, got_subs, got_vids
+            log(f"halaman kanal terbaca dari varian: {variant}")
+            break
     if subs is None or vid_count is None:
         # Observability: kalau halaman kanal tidak terbaca, catat kenapa.
         # Tanpa ini, "tidak terbaca" cuma tebakan.
