@@ -175,6 +175,13 @@ def main():
 
     items = parse_rss(rss)
     subs, vid_count = parse_channel(html)
+    if subs is None or vid_count is None:
+        # Observability: kalau halaman kanal tidak terbaca, catat kenapa.
+        # Tanpa ini, "tidak terbaca" cuma tebakan.
+        log(f"DIAG subs={subs} vids={vid_count} html_len={len(html)} "
+            f"consent={'consent' in html.lower()} "
+            f"sub_word={bool(re.search(r'subscriber|pelanggan', html, re.I))} "
+            f"video_ctx={re.findall(r'\"content\":\"([^\"]{0,24}video[^\"]{0,12})\"', html, re.I)[:3]}")
     total_views = sum(i["views"] for i in items)
 
     prev = None
